@@ -1,3 +1,4 @@
+
 const messages = document.getElementById("messages");
 const form = document.getElementById("chatForm");
 const input = document.getElementById("messageInput");
@@ -11,8 +12,14 @@ const symptomModeButton = document.getElementById("symptomMode");
 const pdfFile = document.getElementById("pdfFile");
 const uploadStatus = document.getElementById("uploadStatus");
 
+const cameraInput = document.getElementById("cameraInput");
+const imagePreview = document.getElementById("imagePreview");
+const previewContainer = document.getElementById("imagePreviewContainer");
+const removeImageButton = document.getElementById("removeImageButton");
+
 let currentMode = "chat";
 let busy = false;
+let previewUrl = null;
 
 function setMode(mode) {
     currentMode = mode;
@@ -32,7 +39,7 @@ function setMode(mode) {
         : "MedicAI is thinking...";
 }
 
-function addMessage(text, role, sources = []) {
+function addMessage(text, role, sources = [], imageUrl = null) {
     welcome.hidden = true;
 
     const bubble = document.createElement("article");
@@ -42,10 +49,24 @@ function addMessage(text, role, sources = []) {
     label.className = "message-label";
     label.textContent = role === "user" ? "YOU" : "MEDICAI";
 
+    bubble.appendChild(label);
+
+    if (imageUrl) {
+        const img = document.createElement("img");
+        img.src = imageUrl;
+        img.alt = "Image sent to MedicAI";
+        img.style.maxWidth = "220px";
+        img.style.maxHeight = "220px";
+        img.style.objectFit = "contain";
+        img.style.display = "block";
+        img.style.borderRadius = "12px";
+        img.style.margin = "8px 0";
+        bubble.appendChild(img);
+    }
+
     const content = document.createElement("div");
     content.textContent = text;
-
-    bubble.append(label, content);
+    bubble.appendChild(content);
 
     if (sources.length > 0) {
         const sourceBox = document.createElement("div");
@@ -96,25 +117,84 @@ async function postJSON(url, body) {
     return data;
 }
 
+function clearSelectedImage() {
+    cameraInput.value = "";
+    imagePreview.removeAttribute("src");
+    previewContainer.hidden = true;
+
+    if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+        previewUrl = null;
+    }
+}
+
+cameraInput.addEventListener("change", () => {
+    const file = cameraInput.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+        alert("Please select an image.");
+        clearSelectedImage();
+        return;
+    }
+
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+
+    previewUrl = URL.createObjectURL(file);
+    imagePreview.src = previewUrl;
+    previewContainer.hidden = false;
+});
+
+removeImageButton.addEventListener("click", clearSelectedImage);
+
 async function sendMessage(text) {
     const message = text.trim();
+    const file = cameraInput.files?.[0] || null;
 
-    if (!message || busy) return;
+    if ((!message && !file) || busy) return;
 
-    addMessage(message, "user");
+    const sentImageUrl = file ? URL.createObjectURL(file) : null;
+
+    addMessage(
+        message || (file ? "Please describe this image." : ""),
+        "user",
+        [],
+        sentImageUrl
+    );
+
     input.value = "";
     busy = true;
     sendButton.disabled = true;
     loading.hidden = false;
 
     try {
-        const data = await postJSON("/chat", {
-            message,
-            mode: currentMode
-        });
+        let data;
 
-        if (data.error) {
-            throw new Error(data.error);
+        if (file) {
+            const formData = new FormData();
+            formData.append("image", file);
+            formData.append(
+                "message",
+                message || "Describe this image and explain what you can observe."
+            );
+
+            const response = await fetch("/vision", {
+                method: "POST",
+                body: formData
+            });
+
+            data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.error || `Image request failed (${response.status})`);
+            }
+
+            clearSelectedImage();
+        } else {
+            data = await postJSON("/chat", {
+                message,
+                mode: currentMode
+            });
         }
 
         addMessage(
@@ -124,10 +204,11 @@ async function sendMessage(text) {
         );
     } catch (error) {
         addMessage(
-            `Could not get a response: ${error.message}. Check that the Flask server and Ollama are running.`,
+            `Could not get a response: ${error.message}`,
             "error"
         );
     } finally {
+        if (sentImageUrl) URL.revokeObjectURL(sentImageUrl);
         busy = false;
         sendButton.disabled = false;
         loading.hidden = true;
@@ -176,7 +257,6 @@ document.getElementById("clearChat").addEventListener("click", async () => {
 
 pdfFile.addEventListener("change", async () => {
     const file = pdfFile.files[0];
-
     if (!file) return;
 
     if (!file.name.toLowerCase().endsWith(".pdf")) {
@@ -187,7 +267,6 @@ pdfFile.addEventListener("change", async () => {
 
     const formData = new FormData();
     formData.append("file", file);
-
     uploadStatus.textContent = "Uploading and processing PDF...";
 
     try {
@@ -195,12 +274,9 @@ pdfFile.addEventListener("change", async () => {
             method: "POST",
             body: formData
         });
-
         const data = await response.json();
 
-        if (!response.ok) {
-            throw new Error(data.error || "Upload failed.");
-        }
+        if (!response.ok) throw new Error(data.error || "Upload failed.");
 
         uploadStatus.textContent = data.message || "PDF uploaded.";
     } catch (error) {
@@ -211,11 +287,7 @@ pdfFile.addEventListener("change", async () => {
 });
 
 document.getElementById("clearKnowledge").addEventListener("click", async () => {
-    const confirmed = window.confirm(
-        "Reset the knowledge base? Uploaded document entries will be removed."
-    );
-
-    if (!confirmed) return;
+    if (!window.confirm("Reset the knowledge base? Uploaded document entries will be removed.")) return;
 
     uploadStatus.textContent = "Resetting knowledge base...";
 
@@ -223,9 +295,7 @@ document.getElementById("clearKnowledge").addEventListener("click", async () => 
         const response = await fetch("/clear_kb", { method: "POST" });
         const data = await response.json();
 
-        if (!response.ok) {
-            throw new Error(data.error || "Reset failed.");
-        }
+        if (!response.ok) throw new Error(data.error || "Reset failed.");
 
         uploadStatus.textContent = data.message || "Knowledge base reset.";
     } catch (error) {
@@ -238,21 +308,17 @@ const groupModal = document.getElementById("groupDetailsModal");
 const closeGroupButton = document.getElementById("closeGroupDetails");
 
 groupButton?.addEventListener("click", () => {
-  groupModal.hidden = false;
+    if (groupModal) groupModal.hidden = false;
 });
 
 closeGroupButton?.addEventListener("click", () => {
-  groupModal.hidden = true;
+    if (groupModal) groupModal.hidden = true;
 });
 
 groupModal?.addEventListener("click", (event) => {
-  if (event.target === groupModal) {
-    groupModal.hidden = true;
-  }
+    if (event.target === groupModal) groupModal.hidden = true;
 });
 
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && groupModal) {
-    groupModal.hidden = true;
-  }
+    if (event.key === "Escape" && groupModal) groupModal.hidden = true;
 });

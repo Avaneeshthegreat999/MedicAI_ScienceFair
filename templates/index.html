@@ -99,9 +99,15 @@
                     required
                 ></textarea>
                 
-                <label for="cameraInput" class="camera-button">📷 Camera / Image</label>
+                <label for="cameraInput" class="camera-button">📷 Upload Image</label>
                 <input id="cameraInput" type="file" accept="image/*" capture="environment" hidden>
                 <img id="imagePreview" alt="Selected image preview" hidden style="max-width: 220px; border-radius: 12px;">
+                
+                <div id="imagePreviewContainer" hidden>
+                <img id="imagePreview" alt="Selected image preview">
+                <button type="button" id="removeImageButton" aria-label="Remove image">✕</button>
+                </div>
+
 
                 <button id="sendButton" type="submit" aria-label="Send message">➤</button>
                 <div class="composer-hint">Enter to send · Shift + Enter for a new line</div>

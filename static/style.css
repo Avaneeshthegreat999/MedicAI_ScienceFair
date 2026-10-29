@@ -526,3 +526,37 @@ footer {
   color: #cbd5e1;
   font-size: 14px;
 }
+
+
+
+#imagePreviewContainer {
+  position: relative;
+  width: fit-content;
+  max-width: 220px;
+  margin: 8px 0;
+}
+
+#imagePreview {
+  display: block;
+  max-width: 220px;
+  max-height: 180px;
+  object-fit: contain;
+}
+
+#imagePreviewContainer[hidden] {
+  display: none;
+}
+
+#removeImageButton {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  border: none;
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  background: #dc2626;
+  color: white;
+  font-size: 16px;
+}

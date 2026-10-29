@@ -13,6 +13,7 @@ from langchain_classic.prompts import PromptTemplate
 from langchain_core.documents import Document
 from langchain_ollama import OllamaLLM
 import shutil
+import ollama
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
@@ -431,11 +432,56 @@ def clear_knowledge_base():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
+
+@app.route("/vision", methods=["POST"])
+def vision():
+    if "image" not in request.files:
+        return jsonify({"error": "Please select or capture an image."}), 400
+
+    image = request.files["image"]
+    if not image.filename:
+        return jsonify({"error": "No image selected."}), 400
+
+    if image.mimetype not in ("image/jpeg", "image/png", "image/webp"):
+        return jsonify({"error": "Please use a JPG, PNG, or WebP image."}), 400
+
+    try:
+        image_bytes = image.read()
+        if not image_bytes or len(image_bytes) > 10 * 1024 * 1024:
+            return jsonify({"error": "Image is empty or exceeds 10 MB."}), 400
+
+        question = request.form.get(
+            "message", "Describe this image and explain relevant details."
+        ).strip()
+
+        result = ollama.chat(
+            model="llava:7b",
+            messages=[{
+                "role": "user",
+                "content": (
+                    "You are MedicAI. Describe only what can reasonably be "
+                    "observed. For medical images, do not diagnose or prescribe "
+                    "treatment. Explain uncertainty and recommend professional "
+                    "evaluation when appropriate.\n\nQuestion: " + question
+                ),
+                "images": [image_bytes]
+            }]
+        )
+
+        return jsonify({
+            "response": result["message"]["content"],
+            "sources": [],
+            "mode": "vision"
+        })
+
+    except Exception as e:
+        app.logger.exception("Vision request failed")
+        return jsonify({"error": f"Image analysis failed: {str(e)}"}), 500
+
+
+
 if __name__ == "__main__":
     print("\n" + "="*50)
-    print("  MediBot — Medical AI Chatbot")
-    print("  Before running, start Ollama:")
-    print("  > ollama serve")
-    print("  > ollama pull llama3")
-    print("="*50 + "\n")
+    print("  MedicAI — Medical AI Chatbot (Science Fair)")
     app.run(debug=True, port=5000)
