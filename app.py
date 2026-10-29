@@ -7,10 +7,11 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_community.llms import Ollama
-from langchain.chains import ConversationalRetrievalChain
-from langchain.memory import ConversationBufferMemory
-from langchain.prompts import PromptTemplate
+from langchain_classic.chains import ConversationalRetrievalChain
+from langchain_classic.memory import ConversationBufferMemory
+from langchain_classic.prompts import PromptTemplate
 from langchain_core.documents import Document
+from langchain_ollama import OllamaLLM
 import shutil
 
 app = Flask(__name__)
@@ -158,7 +159,7 @@ def get_vectorstore():
 vectorstore = get_vectorstore()
 
 # ── LLM ───────────────────────────────────────────────────────────────────
-llm = Ollama(model=OLLAMA_MODEL, temperature=0.3)
+llm = OllamaLLM(model=OLLAMA_MODEL, temperature=0.3)
 
 # ── Prompts ───────────────────────────────────────────────────────────────
 MEDICAL_PROMPT = PromptTemplate(
@@ -256,87 +257,129 @@ def index():
         session["session_id"] = secrets.token_hex(16)
     return render_template("index.html")
 
+
 @app.route("/chat", methods=["POST"])
 def chat():
-    data = request.get_json()
-    msg  = data.get("message", "").strip()
+    data = request.get_json(silent=True) or {}
+    msg = (data.get("message") or "").strip()
     mode = data.get("mode", "chat")
-    sid  = session.get("session_id", "default")
+    sid = session.get("session_id", "default")
 
     if not msg:
-        return jsonify({"error": "Empty message"}), 400
-
-    # Symptom mode
-    if mode == "symptom":
-        try:
-            response = llm(SYMPTOM_PROMPT.format(symptoms=msg))
-            return jsonify({"response": response, "sources": [], "mode": "symptom"})
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-
-    # Medical filter
-    if not is_medical_question(msg):
-        return jsonify({
-            "response": "I'm MediBot — I only answer medical and health questions. Please ask about symptoms, diseases, medications, or treatments. 🏥",
-            "sources": [], "mode": "filtered"
-        })
+        return jsonify({"error": "Please enter a message."}), 400
 
     try:
-        # Retrieve relevant docs manually
-        docs = vectorstore.similarity_search(msg, k=4)
-        context = "\n\n".join([d.page_content for d in docs])
-
-        # Build chat history string manually
         history = ""
         if sid in session_memories:
-            messages = session_memories[sid].chat_memory.messages[-6:]
+            messages = session_memories[sid].chat_memory.messages[-10:]
             for m in messages:
-                role = "Patient" if m.type == "human" else "MediBot"
+                role = "You" if m.type == "human" else "MedicAI"
                 history += f"{role}: {m.content}\n"
 
-        # Build prompt manually
-        prompt = f"""You are MediBot, an expert AI medical assistant.
-Give DETAILED, SPECIFIC medical information. Include medication names, dosages, and treatments.
-Only add "consult a doctor" at the end for serious conditions, not for every response.
+        if mode == "symptom":
+            prompt = f"""You are MedicAI, an informational health assistant.
 
-Context from medical documents:
-{context}
+Assess the symptoms cautiously. Explain possible causes without claiming
+a definite diagnosis. Mention warning signs and when professional care
+is appropriate. Do not prescribe personalised medication doses.
 
-Conversation so far:
+Conversation:
 {history}
 
-Patient: {msg}
-MediBot:"""
+Reported symptoms:
+{msg}
 
-        # Generate response
-        response = llm(prompt)
+Respond clearly with:
+1. Possible explanations
+2. What the person can do safely
+3. Warning signs
+4. When to seek medical care
 
-        # Save to memory manually
+Remind the user that this is informational, not a medical diagnosis.
+"""
+            response = llm.invoke(prompt)
+            sources = []
+
+        elif is_medical_question(msg):
+            docs = vectorstore.similarity_search(msg, k=4)
+            context = "\n\n".join(d.page_content for d in docs)
+
+            prompt = f"""You are MedicAI, a helpful medical information assistant.
+
+Answer the user's health question in clear, understandable language.
+Use the medical context when relevant, but do not invent facts or claim
+that you have diagnosed the user. Do not give personalised prescriptions
+or medication dosages. Explain important warning signs and recommend
+professional medical care when appropriate.
+
+Conversation history:
+{history}
+
+Reference information:
+{context}
+
+User's question:
+{msg}
+
+MedicAI's answer:
+"""
+            response = llm.invoke(prompt)
+
+            sources = []
+            seen = set()
+            for doc in docs:
+                src = doc.metadata.get("source", "Unknown")
+                page = doc.metadata.get("page", "")
+                topic = doc.metadata.get("topic", "")
+                key = f"{src}-{page}"
+
+                if key not in seen:
+                    seen.add(key)
+                    sources.append({
+                        "source": src,
+                        "page": page,
+                        "topic": topic,
+                        "snippet": doc.page_content[:150].strip() + "..."
+                    })
+
+        else:
+            prompt = f"""You are MedicAI, a friendly general-purpose AI assistant.
+Answer everyday questions naturally, including greetings, casual chat,
+science, technology, programming, education, and general knowledge.
+Be helpful, clear, and conversational. Do not claim to be human.
+For medical questions, provide general information rather than a diagnosis.
+
+Conversation history:
+{history}
+
+User: {msg}
+MedicAI:
+"""
+            response = llm.invoke(prompt)
+            sources = []
+
+        response = str(response).strip()
+
         if sid not in session_memories:
             session_memories[sid] = ConversationBufferMemory(
-                memory_key="chat_history", return_messages=True, output_key="answer"
+                memory_key="chat_history",
+                return_messages=True,
+                output_key="answer"
             )
+
         session_memories[sid].chat_memory.add_user_message(msg)
         session_memories[sid].chat_memory.add_ai_message(response)
 
-        # Extract sources
-        sources, seen = [], set()
-        for doc in docs:
-            src   = doc.metadata.get("source", "Unknown")
-            page  = doc.metadata.get("page", "")
-            topic = doc.metadata.get("topic", "")
-            key   = f"{src}-{page}"
-            if key not in seen:
-                seen.add(key)
-                sources.append({
-                    "source": src, "page": page, "topic": topic,
-                    "snippet": doc.page_content[:150].strip() + "..."
-                })
-
-        return jsonify({"response": response, "sources": sources, "mode": "rag"})
+        return jsonify({
+            "response": response,
+            "sources": sources,
+            "mode": mode
+        })
 
     except Exception as e:
-        return jsonify({"error": f"LLM Error: {str(e)}"}), 500
+        app.logger.exception("Chat request failed")
+        return jsonify({"error": f"Chat error: {str(e)}"}), 500
+
     
 @app.route("/upload", methods=["POST"])
 def upload_pdf():
